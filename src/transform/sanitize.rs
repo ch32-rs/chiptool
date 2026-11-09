@@ -1,4 +1,5 @@
 use convert_case::{Boundary, Casing};
+use inflections::Inflect;
 use serde::{Deserialize, Serialize};
 
 use super::{map_names, NameKind, IR};
@@ -14,6 +15,14 @@ pub enum SanitizeCase {
     UpperFlat,
     /// Path: `snake::Pascal`
     PathSnakePascal,
+    /// Uppercase with `inflections`, as chiptool did before #124.
+    LegacyUpper,
+    /// Snake case with `inflections`, as chiptool did before #124.
+    LegacySnake,
+    /// Pascal case with `inflections`, as chiptool did before #124.
+    LegacyPascal,
+    /// Path: `snake::Pascal` using the legacy conversions.
+    LegacyPath,
 }
 
 impl SanitizeCase {
@@ -36,6 +45,24 @@ impl SanitizeCase {
                             sanitize_with_case(seg, convert_case::Case::Pascal)
                         } else {
                             sanitize_with_case(seg, convert_case::Case::Snake)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("::")
+            }
+            SanitizeCase::LegacyUpper => legacy_sanitize_upper(s),
+            SanitizeCase::LegacySnake => legacy_sanitize_snake(s),
+            SanitizeCase::LegacyPascal => legacy_sanitize_pascal(s),
+            SanitizeCase::LegacyPath => {
+                let v = s.split("::").collect::<Vec<_>>();
+                let len = v.len();
+                v.into_iter()
+                    .enumerate()
+                    .map(|(i, seg)| {
+                        if i == len - 1 {
+                            legacy_sanitize_pascal(seg)
+                        } else {
+                            legacy_sanitize_snake(seg)
                         }
                     })
                     .collect::<Vec<_>>()
@@ -176,5 +203,66 @@ pub(crate) fn sanitize_ident(s: String) -> String {
         format!("_{}", s)
     } else {
         s
+    }
+}
+
+/// Name conversions used by chiptool before #124 switched from `inflections`
+/// to `convert_case`. They are kept so downstream data can opt out of the
+/// naming churn until its generated API has been migrated.
+const LEGACY_BLACKLIST_CHARS: &[char] = &['(', ')', '[', ']', '/', ' ', '-'];
+
+static LEGACY_KEYWORDS: &[&str] = &[
+    "abstract", "alignof", "as", "async", "await", "become", "box", "break", "const", "continue",
+    "crate", "do", "else", "enum", "extern", "false", "final", "fn", "for", "if", "impl", "in",
+    "let", "loop", "macro", "match", "mod", "move", "mut", "offsetof", "override", "priv", "proc",
+    "pub", "pure", "ref", "return", "self", "sizeof", "static", "struct", "super", "trait", "true",
+    "try", "type", "typeof", "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
+    "set_bit", "clear_bit", "bit", "bits",
+];
+
+fn legacy_sanitize_upper(s: &str) -> String {
+    let s = s.replace(LEGACY_BLACKLIST_CHARS, "");
+    if s.starts_with(char::is_numeric) {
+        format!("_{}", s.to_upper_case())
+    } else {
+        s.to_upper_case()
+    }
+}
+
+fn legacy_sanitize_pascal(s: &str) -> String {
+    let s = s.replace(LEGACY_BLACKLIST_CHARS, "");
+    if s.starts_with(char::is_numeric) {
+        format!("_{}", s.to_pascal_case())
+    } else {
+        s.to_pascal_case()
+    }
+}
+
+fn legacy_sanitize_snake(s: &str) -> String {
+    let s = s.replace(LEGACY_BLACKLIST_CHARS, "");
+    if s.starts_with(char::is_numeric) {
+        format!("_{}", s.to_snake_case())
+    } else if LEGACY_KEYWORDS.contains(&&*s.to_lowercase()) {
+        format!("{}_", s.to_lowercase())
+    } else {
+        s.to_snake_case()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_cases_keep_pre_124_names() {
+        assert_eq!(SanitizeCase::LegacyUpper.apply("PWMx"), "PWMX");
+        assert_eq!(SanitizeCase::LegacyUpper.apply("TouchKey"), "TOUCHKEY");
+        assert_eq!(SanitizeCase::LegacyPath.apply("PWMx"), "Pwmx");
+        assert_eq!(SanitizeCase::LegacyPath.apply("EPn_MODE"), "EpnMode");
+        assert_eq!(SanitizeCase::LegacySnake.apply("PAx_IN_DIS"), "pax_in_dis");
+        assert_eq!(SanitizeCase::LegacySnake.apply("EPn_MODE"), "epn_mode");
+        assert_eq!(SanitizeCase::LegacySnake.apply("CLKMode"), "clkmode");
+        assert_eq!(SanitizeCase::LegacySnake.apply("DUPlEX"), "dupl_ex");
+        assert_eq!(SanitizeCase::LegacySnake.apply("match"), "match_");
     }
 }
